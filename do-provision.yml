@@ -1,0 +1,101 @@
+#cloud-config
+
+# Users
+users:
+  - name: deploy
+    groups: sudo
+    shell: /bin/bash
+    sudo: ['ALL=(ALL) NOPASSWD:ALL']
+    ssh-authorized-keys:
+      - <%SSH_PUB_KEY%>
+
+# Web server
+apt_update: true
+packages:
+  - nginx
+  - php7.0-fpm
+  - php-mysql
+  - php-cli
+  - php7.0-mcrypt
+  - php7.0-gd
+  - php7.0-curl
+  - php7.0-xml
+  - git
+  - curl
+  - php-mbstring
+  - unzip
+write_files:
+  - path: /etc/nginx/sites-available/default
+    content: |
+      server {
+        listen 80 default_server;
+        listen [::]:80 default_server ipv6only=on;
+
+        root /srv/www/html/current/web;
+        index index.php index.html index.htm;
+
+        server_name default_server;
+
+        location / {
+            # First attempt to serve request as file, then
+            # as directory, attemp point of entry for rewrite.
+            try_files $uri $uri/ /index.php?$args;
+            # Uncomment to enable naxsi on this location
+            # include /etc/nginx/naxsi.rules
+        }
+
+        error_page 404 /404.html;
+        error_page 500 502 503 504 /50x.html;
+        location = /50x.html {
+            root /usr/share/nginx/html;
+        }
+
+        location ~ \.php$ {
+            try_files $uri =404;
+            fastcgi_split_path_info ^(.+\.php)(/.+)$;
+            fastcgi_pass unix:/var/run/php/php7.0-fpm.sock;
+            fastcgi_index index.php;
+            include fastcgi.conf;
+        }
+      }
+runcmd:
+  # The resulting file is at /var/lib/cloud/instance/scripts/runcmd
+  # Leaving some traces in the log
+  - export srVersion="0.0.0"
+  - logger "cloudconfig script version is $srVersion"
+  - logger "Part of Scotch on Rocks https://github.com/Dhii/scotch-on-rocks"
+  # Setting up web server
+  - mkdir -p /srv/www/html/current
+  - mkdir -p /srv/www/html/shared
+  - mkdir -p /srv/www/html/releases
+  - chown -R deploy:deploy /srv/www
+  - chmod g+s /srv/www
+  - sed -i -e "s/;cgi.fix_pathinfo=1/cgi.fix_pathinfo=0/" /etc/php/7.0/fpm/php.ini
+  # Ensure backwards compatible with 14.04
+  - file=/etc/nginx/fastcgi.conf; if [ ! -f "$file" ]; then ln -s /etc/nginx/fastcgi_params "$file"; fi
+  - service nginx restart
+  # Install Composer
+  - cd ~
+  - curl -sS "https://getcomposer.org/installer" | sudo php -- --install-dir="/usr/local/bin" --filename="composer"
+  # Install MySQL
+  # Starting Ubuntu 15, MariaDB uses root user credentials for MySQL root user
+  # https://mariadb.com/kb/en/library/authentication-plugin-unix-socket/
+  - export DEBIAN_FRONTEND="noninteractive"
+  - sudo -E apt-get -y install mariadb-server
+  # Configure WordPress
+  - export wordpressDatabase="wordpress"
+  - export wordpressUser="wordpressuser"
+  - export wordpressPassword="wordpresspassword"
+  - sudo mysql -u root --password='$mysqlPassword' -e "CREATE DATABASE \`$wordpressDatabase\`;"
+  - sudo mysql -u root --password='$mysqlPasword' -e "GRANT ALL PRIVILEGES ON \`$wordpressDatabase\`.* TO '$wordpressUser'@'localhost' IDENTIFIED BY '$wordpressPassword'; FLUSH PRIVILEGES;"
+  # Installing WP CLI
+  - curl -O "https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar"
+  - sudo mv wp-cli.phar /usr/local/bin/wp
+  - sudo chmod +x /usr/local/bin/wp
+  # Installing `dotenv` plugin for WP CLI
+  # https://stackoverflow.com/questions/20667761/composer-killed-while-updating/47975942#47975942
+  - sudo service mysql stop
+  - sudo service php7.0-fpm stop
+  - wp package install aaemnnosttv/wp-cli-dotenv-command:^1.0.2
+  - sudo service mysql stop
+  - sudo service php7.0-fpm stop
